@@ -1,0 +1,9 @@
+- [[pss-project-overview]] What PSS is, repos, layout, handover/baseline paths, the parity objective
+- [[pss-current-status]] Release state, next dev number, open issues and Dan's open items
+- [[pss-working-preferences]] How Dan wants steps, questions, releases and perf handled
+- [[pss-shared-query-placement]] Shared UI query code lives in Libraries; measure resident cost
+- [[pss-binding-rules]] Dan's full A-G rule set is the project instructions (02_RULES.md); G2 confirmed 2026-10-05
+- [[pss-porting-rules]] G7-G10: native ports use own/Blizzard resources, look close, copy our EUI code when smaller, EUI folder read only, shared funcs perf-optimized
+- [[pss-baseline-saves]] Real saves 2.0.44, 3.0.0, 3.2.0-dev011: paths and how the harness runs them
+- [[pss-two-counting-systems]] Native (PSS_BlockStats, hour buckets) vs EUI (History.Recent*, 10-min slots) cannot agree; retire BlockStats
+- [[pss-parity-decisions]] Dan's answers to parity decisions 1-5 (16:32Z): retire BlockStats, breadcrumb, Events tab, port 3-page pane, front ends independent

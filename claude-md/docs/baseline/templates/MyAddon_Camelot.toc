@@ -1,0 +1,11 @@
+## Interface: 16001
+## Title: |cff69ccf0MyAddon|r
+## Notes: the author's wording here
+## Author: <Author>
+## Version: 1.0.0.1
+## Category: MyAddon
+## Group: MyAddon
+## IconTexture: Interface\FriendsFrame\Battlenet-Portrait
+## SavedVariables: MyAddonDB
+
+MyAddon.lua

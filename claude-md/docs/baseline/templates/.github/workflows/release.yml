@@ -1,0 +1,193 @@
+# Publishes a GitHub release whenever the version in $ADDON/$ADDON.toc changes
+# on main: tags v<version> and attaches $ADDON-<version>.zip (every addon folder
+# $ADDON and $ADDON_*, readme.txt and history.txt inside $ADDON; no .github or
+# tools). Does nothing if the release exists.
+# Every version is X.Y.Z.B (B = the build number, which never resets; a
+# release is a build too, 02 F). versions.json (tools/versions.py, never
+# shipped) says what each one is: the latest release, or a pre-release
+# recorded with its PR; a version it does not record is not published.
+# A pre-release's notes are its history section. A full release's notes are
+# its history section only: one summary of every change since the previous
+# release, written at release time from the PRs versions.json lists between
+# the two (02 F5). Job "mirror" keeps $MIRROR_REPO on the latest full
+# release: the zip's contents committed as its files, and the release with the
+# same zip and notes on that commit (secret MIRROR_TOKEN: contents read and
+# write on that repo); delete the job if there is no mirror. Pre-releases
+# are not mirrored.
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  ADDON: MyAddon                     # main folder / TOC name
+  MIRROR_REPO: <owner>/<mirror repo>  # where full releases are mirrored
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      kind: ${{ steps.v.outputs.kind }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read version
+        id: v
+        run: |
+          ver=$(sed -n 's/^## Version: *//p' "$ADDON/$ADDON.toc" | tr -d '\r')
+          kind=$(python3 tools/versions.py kind "$ver")
+          if [ "$kind" = unknown ]; then
+            echo "::error::$ver is not in versions.json (sh tools/bump_version.sh records it)"
+            exit 1
+          fi
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+          echo "kind=$kind" >> "$GITHUB_OUTPUT"
+          if gh release view "v$ver" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Build zip and notes
+        if: steps.v.outputs.exists == 'false'
+        run: |
+          ver=${{ steps.v.outputs.version }}
+          mkdir -p build
+          for d in "$ADDON" "$ADDON"_*/; do
+            if [ -d "$d" ]; then cp -r "${d%/}" build/; fi
+          done
+          cp readme.txt history.txt "build/$ADDON/"
+          (cd build && zip -qr "../$ADDON-$ver.zip" .)
+          {
+            echo "**Install:** extract the zip into \`World of Warcraft/_retail_/Interface/AddOns/\`."
+            echo
+            if [ "${{ steps.v.outputs.kind }}" = release ]; then
+              prev=$(python3 -c 'import json; print(json.load(open("versions.json"))["releases"][0]["previous"])')
+              echo "### Changes since $prev"
+            else
+              echo "### Changes"
+            fi
+            awk -v v="$ver" '
+              index($0, "=> " v " ") == 1 { on = 1; next }
+              on && /^=> / { exit }
+              on { print }
+            ' history.txt
+            echo
+            echo "Full changelog: history.txt"
+          } > notes.md
+          cat notes.md
+
+      - name: Publish release
+        if: steps.v.outputs.exists == 'false'
+        run: |
+          ver=${{ steps.v.outputs.version }}
+          pre="--latest"
+          [ "${{ steps.v.outputs.kind }}" = release ] || pre="--prerelease"
+          gh release create "v$ver" "$ADDON-$ver.zip" $pre \
+            --target "$GITHUB_SHA" --title "$ADDON $ver" --notes-file notes.md
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Keep pre-releases marked as pre-releases
+        run: |
+          gh release list --limit 100 --json tagName,isPrerelease \
+            --jq '.[] | select(.isPrerelease | not) | .tagName' |
+          while read -r tag; do
+            v=${tag#v}
+            case "$v" in *-*) gh release edit "$tag" --prerelease; continue ;; esac
+            if [ "$(python3 tools/versions.py kind "$v")" = pre-release ]; then gh release edit "$tag" --prerelease; fi
+          done
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  mirror:
+    # Keeps $MIRROR_REPO on the latest full release (versions.json
+    # latestRelease): the release zip's contents committed as the repo's files
+    # (every addon folder at the root; files of the mirror's own, such as its
+    # readme.md, are kept), and the release, with the same zip and notes, on
+    # that commit. Runs after every push and does nothing when the mirror is
+    # already there, so a release that went across without its files is
+    # repaired by the next push (or Actions > Release > Run workflow).
+    needs: release
+    if: ${{ always() && needs.release.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the latest release and the mirror
+        id: m
+        run: |
+          VER=$(python3 tools/versions.py latest)
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          if [ -z "$VER" ]; then echo "skip=true" >> "$GITHUB_OUTPUT"; echo "No release yet: nothing to mirror"; exit 0; fi
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::Add a MIRROR_TOKEN secret with contents read and write on $MIRROR_REPO"
+            exit 1
+          fi
+          git clone -q "https://x-access-token:${GH_TOKEN}@github.com/${MIRROR_REPO}.git" mirror
+          toc() { sed -n 's/^## Version: *//p' | tr -d '\r'; }
+          files=$( { toc < "mirror/$ADDON/$ADDON.toc"; } 2>/dev/null || true)
+          tagged=$(git -C mirror show "v$VER:$ADDON/$ADDON.toc" 2>/dev/null | toc || true)
+          if [ "$files" = "$VER" ] && [ "$tagged" = "$VER" ] && gh release view "v$VER" --repo "$MIRROR_REPO" >/dev/null 2>&1; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "The mirror is on $VER"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "The mirror needs $VER (files: ${files:-none}, tagged: ${tagged:-none})"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.MIRROR_TOKEN }}
+
+      - name: Fetch the zip and notes
+        if: steps.m.outputs.skip == 'false'
+        run: |
+          gh release download "v$VER" --repo "$GITHUB_REPOSITORY" --pattern "$ADDON-$VER.zip"
+          gh release view "v$VER" --repo "$GITHUB_REPOSITORY" --json body --jq .body > notes.md
+        env:
+          VER: ${{ steps.m.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Commit the release's files to the mirror
+        id: c
+        if: steps.m.outputs.skip == 'false'
+        run: |
+          cd mirror
+          for d in "$ADDON" "$ADDON"_*/; do
+            if [ -d "$d" ]; then git rm -rq "${d%/}"; fi
+          done
+          unzip -q "../$ADDON-$VER.zip" -d .
+          git add -A
+          if ! git diff --cached --quiet; then
+            git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -q -m "$ADDON $VER"
+            git push -q origin HEAD
+          fi
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+        env:
+          VER: ${{ steps.m.outputs.version }}
+
+      - name: Publish the release on the mirror
+        if: steps.m.outputs.skip == 'false'
+        run: |
+          # a release whose tag is not on the release's files (made before the
+          # files were copied) is made again on them
+          tagged=$(git -C mirror show "v$VER:$ADDON/$ADDON.toc" 2>/dev/null | sed -n 's/^## Version: *//p' | tr -d '\r' || true)
+          if [ "$tagged" != "$VER" ] && gh release view "v$VER" --repo "$MIRROR_REPO" >/dev/null 2>&1; then
+            gh release delete "v$VER" --repo "$MIRROR_REPO" --cleanup-tag --yes
+          fi
+          if ! gh release view "v$VER" --repo "$MIRROR_REPO" >/dev/null 2>&1; then
+            gh release create "v$VER" "$ADDON-$VER.zip" --repo "$MIRROR_REPO" --target "$SHA" \
+              --title "$ADDON $VER" --notes-file notes.md --latest
+          fi
+        env:
+          VER: ${{ steps.m.outputs.version }}
+          SHA: ${{ steps.c.outputs.sha }}
+          GH_TOKEN: ${{ secrets.MIRROR_TOKEN }}

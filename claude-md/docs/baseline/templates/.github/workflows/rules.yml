@@ -1,0 +1,19 @@
+# Rules check on every pull request and push to main: tools/check_rules.sh
+name: Rules
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Lua 5.1
+        run: sudo apt-get update -q && sudo apt-get install -y -q lua5.1
+      - name: Check rules
+        run: sh tools/check_rules.sh
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}

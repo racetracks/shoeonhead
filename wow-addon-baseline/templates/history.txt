@@ -1,0 +1,10 @@
+MYADDON - VERSION HISTORY
+(newest first)
+
+=> 1.0.0.2 - Short title
+
+- What changed, in plain words.
+
+=> 1.0.0.1 - First build
+
+- First test build.
